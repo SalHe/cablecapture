@@ -11,6 +11,8 @@ export interface Cable {
 
 // ────────────────────────── Constants ──────────────────────
 
+const STORAGE_KEY = 'cablecapture-cables'
+
 function makeDefaultCables(): Cable[] {
   const cables: Cable[] = []
   let id = 1
@@ -24,15 +26,34 @@ function makeDefaultCables(): Cable[] {
   return cables
 }
 
+function loadFromStorage(): Cable[] | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const data = JSON.parse(raw)
+    if (Array.isArray(data) && data.length > 0 && data.every((c: any) => typeof c.id === 'number' && typeof c.diameter === 'number')) {
+      return data as Cable[]
+    }
+  } catch { /* corrupted data — use defaults */ }
+  return null
+}
+
+function saveToStorage(cables: Cable[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cables))
+  } catch { /* storage full or unavailable */ }
+}
+
 // ────────────────────────── Composable ─────────────────────
 
 export function useCablePack() {
   // ── State ──
-  const defaults = makeDefaultCables()
+  const saved = loadFromStorage()
+  const defaults = saved ?? makeDefaultCables()
   const cables = ref<Cable[]>([...defaults])
   const packing = shallowRef<PackingResult>({ positions: [], enclosingR: 0 })
   const isDragging = ref(false)
-  let nextId = defaults.length + 1
+  let nextId = defaults.reduce((max, c) => Math.max(max, c.id), 0) + 1
 
   // ── Derived ──
   const radii = computed<number[]>(() => cables.value.map(c => c.diameter / 2))
@@ -49,9 +70,10 @@ export function useCablePack() {
     }
   }
 
-  // Auto-recalculate when cables change (debounced)
+  // Auto-recalculate + persist when cables change (debounced)
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   watch(cables, () => {
+    saveToStorage(cables.value)
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
       recalculate()
@@ -86,6 +108,24 @@ export function useCablePack() {
     const remaining = cables.value.filter(c => !idSet.has(c.id))
     if (remaining.length === 0) return // keep at least one
     cables.value = remaining
+  }
+
+  /** Remove the last cable from a group (used by "-" button). */
+  function removeOneFromGroup(ids: number[]) {
+    if (cables.value.length <= 1) return
+    const idSet = new Set(ids)
+    // Find the last cable whose id is in the set
+    let found = false
+    cables.value = cables.value.filter(c => {
+      if (found || !idSet.has(c.id)) return true
+      found = true
+      return false
+    })
+  }
+
+  /** Remove all cables. */
+  function clearAll() {
+    cables.value = []
   }
 
   /** Update diameter for a single cable. */
@@ -146,6 +186,8 @@ export function useCablePack() {
     addCables,
     removeCable,
     removeCableGroup,
+    removeOneFromGroup,
+    clearAll,
     updateCable,
     updateCableGroup,
     onDragEnd,

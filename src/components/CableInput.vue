@@ -23,6 +23,8 @@ defineProps<{
 const emit = defineEmits<{
   add: [diameter: number, quantity: number]
   removeGroup: [ids: number[]]
+  removeOne: [ids: number[]]
+  clearAll: []
   updateGroup: [ids: number[], diameter: number]
 }>()
 
@@ -204,9 +206,21 @@ function toggleCollapsed() {
             <span class="unit">mm</span>
           </div>
           <span class="multiply">×</span>
+        <div class="qty-controls">
+          <button
+            class="btn-qty"
+            aria-label="减少一根"
+            @click="emit('removeOne', group.ids)"
+          >−</button>
           <span class="count-badge">{{ group.count }}</span>
           <button
-            class="btn-remove"
+            class="btn-qty"
+            aria-label="增加一根"
+            @click="emit('add', group.diameter, 1)"
+          >+</button>
+        </div>
+        <button
+          class="btn-remove"
             :disabled="cableGroups.length <= 1 && group.count <= 1"
             aria-label="删除该组线缆"
             @click="emit('removeGroup', group.ids)"
@@ -219,6 +233,14 @@ function toggleCollapsed() {
       <div v-else class="empty-hint">
         请添加线缆
       </div>
+
+      <button
+        v-if="cableGroups.length > 0"
+        class="btn-clear"
+        @click="emit('clearAll')"
+      >
+        清空全部
+      </button>
     </div><!-- .panel-content -->
   </section>
 </template>
@@ -533,6 +555,38 @@ function toggleCollapsed() {
   flex-shrink: 0;
 }
 
+.qty-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-qty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1;
+  transition: all 0.15s;
+}
+
+.btn-qty:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-qty:active {
+  transform: scale(0.93);
+}
+
 .count-badge {
   display: flex;
   align-items: center;
@@ -572,6 +626,26 @@ function toggleCollapsed() {
 .btn-remove:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+.btn-clear {
+  padding: 8px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  transition: all 0.15s;
+  opacity: 0.6;
+}
+
+.btn-clear:hover {
+  background: var(--danger);
+  color: #fff;
+  opacity: 1;
 }
 
 .empty-hint {

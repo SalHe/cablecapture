@@ -12,6 +12,8 @@ const {
   outerDiameter,
   addCables,
   removeCableGroup,
+  removeOneFromGroup,
+  clearAll,
   updateCableGroup,
   onDragEnd,
 } = useCablePack()
@@ -40,6 +42,8 @@ const maxDiameter = computed(() => {
           :cable-groups="cableGroups"
           @add="addCables"
           @remove-group="removeCableGroup"
+          @remove-one="removeOneFromGroup"
+          @clear-all="clearAll"
           @update-group="updateCableGroup"
         />
       </div>

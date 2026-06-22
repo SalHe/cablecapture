@@ -649,12 +649,17 @@ export function packCircles(radii: number[]): PackingResult {
  * Runs a shorter compressive refinement preserving manual adjustments.
  */
 export function repackAfterDrag(radii: number[], positions: Point[]): number {
-  // Quick refinement — fewer iterations, preserve user intent
   const n = positions.length
   if (n <= 1) return enclosingRadius(positions, radii)
 
-  for (let iter = 0; iter < 300; iter++) {
-    const forces: Point[] = Array.from({ length: n }, () => ({ x: 0, y: 0 }))
+  let curR = enclosingRadius(positions, radii)
+  let targetR = curR * 0.92 // gently shrink
+  let bestR = curR
+  let bestPositions = positions.map(p => ({ ...p }))
+
+  for (let iter = 0; iter < 500; iter++) {
+    const fx = new Float64Array(n)
+    const fy = new Float64Array(n)
     let maxOverlap = 0
 
     for (let i = 0; i < n; i++) {
@@ -664,44 +669,71 @@ export function repackAfterDrag(radii: number[], positions: Point[]): number {
         const d = Math.sqrt(dx * dx + dy * dy)
         const minD = radii[i] + radii[j]
         if (d < minD && d > 1e-10) {
-          const overlap = minD - d
-          if (overlap > maxOverlap) maxOverlap = overlap
-          const f = overlap * 0.5
-          forces[i].x += (dx / d) * f
-          forces[i].y += (dy / d) * f
-          forces[j].x -= (dx / d) * f
-          forces[j].y -= (dy / d) * f
+          const ov = minD - d
+          if (ov > maxOverlap) maxOverlap = ov
+          const k = 0.4 + 0.3 * Math.min(ov / Math.max(radii[i], radii[j], 0.01), 1)
+          const f = ov * k
+          fx[i] += (dx / d) * f; fy[i] += (dy / d) * f
+          fx[j] -= (dx / d) * f; fy[j] -= (dy / d) * f
+        } else if (d < 1e-10) {
+          fx[i] += 0.05; fy[i] += 0.05
+          fx[j] -= 0.05; fy[j] -= 0.05
         }
       }
     }
 
-    const curR = enclosingRadius(positions, radii)
+    curR = enclosingRadius(positions, radii)
+    const effTarget = Math.max(targetR, curR * 0.82)
     let maxWallPen = 0
 
     for (let i = 0; i < n; i++) {
       const d = norm(positions[i])
       if (d < 1e-10) continue
-      const maxD = curR - radii[i]
+      // Stronger centripetal — distance-proportional
+      const cp = 0.01 + d * 0.015
+      fx[i] -= (positions[i].x / d) * cp
+      fy[i] -= (positions[i].y / d) * cp
+
+      const maxD = effTarget - radii[i]
       if (d > maxD) {
         const pen = d - maxD
         if (pen > maxWallPen) maxWallPen = pen
-        forces[i].x -= (positions[i].x / d) * pen * 0.7
-        forces[i].y -= (positions[i].y / d) * pen * 0.7
+        const ws = 0.5 + pen * 0.35
+        fx[i] -= (positions[i].x / d) * pen * ws
+        fy[i] -= (positions[i].y / d) * pen * ws
       }
-      // Light centripetal
-      forces[i].x -= positions[i].x * 0.003
-      forces[i].y -= positions[i].y * 0.003
     }
 
-    const damping = 0.88
+    const damping = 0.82
     for (let i = 0; i < n; i++) {
-      positions[i].x += forces[i].x * damping
-      positions[i].y += forces[i].y * damping
+      positions[i].x += fx[i] * damping
+      positions[i].y += fy[i] * damping
     }
 
-    if (maxOverlap < 1e-6 && maxWallPen < 1e-6) break
+    // Gentle shrink
+    if (maxOverlap < 1e-5) {
+      targetR *= 0.998
+      if (maxOverlap < 1e-7 && maxWallPen < 1e-7 && curR < bestR) {
+        bestR = curR
+        bestPositions = positions.map(p => ({ ...p }))
+      }
+    } else {
+      targetR = Math.max(targetR, curR * 0.96)
+    }
+
+    if (maxOverlap < 1e-9 && maxWallPen < 1e-9) break
+  }
+
+  // Restore best
+  for (let i = 0; i < n; i++) {
+    positions[i].x = bestPositions[i].x
+    positions[i].y = bestPositions[i].y
   }
 
   resolveAllOverlaps(positions, radii)
+  recenter(positions) // center circles in viewport
   return enclosingRadius(positions, radii)
 }
+
+// Export recenter for canvas use
+export { recenter as centerPositions }

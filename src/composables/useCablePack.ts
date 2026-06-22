@@ -1,7 +1,7 @@
 import { ref, computed, watch, shallowRef } from 'vue'
 import { packCircles, repackAfterDrag } from '@/utils/circlePacking'
 import type { Point, PackingResult } from '@/utils/circlePacking'
-import { initWasm, isWasmReady, packCirclesWasm } from '@/wasm/cablepackWasm'
+import { initWasm, packCirclesWasm } from '@/wasm/cablepackWasm'
 
 // ────────────────────────── Types ──────────────────────────
 
@@ -71,23 +71,18 @@ export function useCablePack() {
 
   const outerDiameter = computed<number>(() => Math.round(packing.value.enclosingR * 2 * 100) / 100)
 
-  // ── Recalculate packing (WASM first, JS fallback) ──
-  function recalculate() {
-    const r = radii.value
-    if (r.length === 0) {
-      packing.value = { positions: [], enclosingR: 0 }
-      return
-    }
+  // ── Core engine: WASM first, JS fallback ──
+  function computePacking(r: number[]): PackingResult {
+    if (r.length === 0) return { positions: [], enclosingR: 0 }
 
-    // Try WASM solver first
     const wasmResult = packCirclesWasm(r)
-    if (wasmResult) {
-      packing.value = wasmResult
-      return
-    }
+    if (wasmResult) return wasmResult
 
-    // Fall back to JS solver
-    packing.value = packCircles(r)
+    return packCircles(r)
+  }
+
+  function recalculate() {
+    packing.value = computePacking(radii.value)
   }
 
   // Auto-recalculate + persist when cables change (debounced)
@@ -102,13 +97,9 @@ export function useCablePack() {
 
   // Kick off WASM loading (async, non-blocking)
   initWasm().then(() => {
-    // Re-run with WASM once it's ready (if cables changed during load this would overwrite, but initWasm is fast)
+    // Re-run with WASM once it's ready
     if (cables.value.length > 0) {
-      const r = radii.value
-      const wasmResult = packCirclesWasm(r)
-      if (wasmResult) {
-        packing.value = wasmResult
-      }
+      packing.value = computePacking(radii.value)
     }
   })
 
@@ -193,12 +184,7 @@ export function useCablePack() {
   /** Re-run the full greedy+refine algorithm from scratch. */
   function fullRecalculate() {
     if (debounceTimer) clearTimeout(debounceTimer)
-    const r = radii.value
-    if (r.length === 0) {
-      packing.value = { positions: [], enclosingR: 0 }
-    } else {
-      packing.value = packCircles(r)
-    }
+    packing.value = computePacking(radii.value)
     hasManuallyAdjusted.value = false
   }
 

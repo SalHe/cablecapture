@@ -516,13 +516,80 @@ function runOnePass(radii: number[], order: number[]): { positions: Point[]; enc
   return { positions, enclosingR }
 }
 
+// ──────────────────── Phase 6: Ring Placement ──────────────
+
+/**
+ * Ring placement: equally space the N largest equal circles on a ring,
+ * then greedily place the rest. Directly captures the optimal topology
+ * for patterns like 3×large + N×small.
+ */
+function ringStart(radii: number[]): Point[] {
+  const n = radii.length
+  const maxR = Math.max(...radii)
+  const largeIndices: number[] = []
+  const smallIndices: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(radii[i] - maxR) < 1e-9) largeIndices.push(i)
+    else smallIndices.push(i)
+  }
+
+  const largeCount = largeIndices.length
+  // Only use ring strategy for 3+ equal largest circles (and not all equal)
+  if (largeCount < 3 || largeCount === n) {
+    return greedyWithOrder(radii, [...largeIndices, ...smallIndices])
+  }
+
+  const positions: Point[] = new Array(n)
+  const d = maxR / Math.sin(Math.PI / largeCount)
+  for (let i = 0; i < largeCount; i++) {
+    const angle = (2 * Math.PI * i) / largeCount
+    positions[largeIndices[i]] = { x: d * Math.cos(angle), y: d * Math.sin(angle) }
+  }
+
+  // Greedily place remaining small circles
+  const placed = new Set<number>(largeIndices)
+  for (const idx of smallIndices) {
+    const r = radii[idx]
+    let bestPos: Point = { x: 0, y: 0 }
+    let bestEst = Infinity
+    const placedArr = [...placed]
+
+    for (let a = 0; a < placedArr.length; a++) {
+      for (let b = a + 1; b < placedArr.length; b++) {
+        const ia = placedArr[a]; const ib = placedArr[b]
+        for (const cand of circleIntersection(positions[ia], radii[ia] + r, positions[ib], radii[ib] + r)) {
+          let ok = true
+          for (const j of placed) {
+            if (dist(cand, positions[j]) < r + radii[j] - 1e-9) { ok = false; break }
+          }
+          if (ok) { const est = norm(cand) + r; if (est < bestEst) { bestEst = est; bestPos = cand } }
+        }
+      }
+    }
+    for (const ia of placedArr) {
+      const ca = positions[ia]; const da = radii[ia] + r
+      const ang = Math.atan2(ca.y, ca.x)
+      const cand: Point = { x: ca.x - Math.cos(ang) * da, y: ca.y - Math.sin(ang) * da }
+      let ok = true
+      for (const j of placed) {
+        if (j === ia) continue
+        if (dist(cand, positions[j]) < r + radii[j] - 1e-9) { ok = false; break }
+      }
+      if (ok) { const est = norm(cand) + r; if (est < bestEst) { bestEst = est; bestPos = cand } }
+    }
+    positions[idx] = bestPos
+    placed.add(idx)
+  }
+  recenter(positions)
+  return positions
+}
+
 // ──────────────────── Public API ───────────────────────────
 
 /**
  * Pack circles into a minimal enclosing circle.
  *
- * Uses multi-start: tries largest-first ordering + several random orderings,
- * runs compressive force-refinement on each, keeps the tightest result.
+ * Multi-start: ring-placement + largest-first + smallest-first + random orderings.
  */
 export function packCircles(radii: number[]): PackingResult {
   if (!radii || radii.length === 0) {
@@ -554,8 +621,13 @@ export function packCircles(radii: number[]): PackingResult {
 
   const orderings = [largestFirst, smallestFirst, ...randomOrders]
 
-  // Run all candidates, clone positions for best result
-  let bestResult: PackingResult | null = null
+  // Try ring placement first (catches 3-large + N-small pattern)
+  const ringPositions = ringStart(r)
+  iteratedSearch(ringPositions, r)
+  let bestResult: PackingResult | null = {
+    positions: ringPositions.map(p => ({ ...p })),
+    enclosingR: enclosingRadius(ringPositions, r),
+  }
 
   for (const order of orderings) {
     const result = runOnePass(r, order)

@@ -343,12 +343,103 @@ fn resolve_overlaps(positions: &mut [Point], radii: &[f64]) {
 
 fn run_one(radii: &[f64], order: &[usize], rng: &mut XorShift) -> (Vec<Point>, f64) {
     let mut pos = greedy(radii, order);
-    let _ = force_refine(&mut pos, radii, 2000);
-    let _ = simulated_annealing(&mut pos, radii, rng);
-    let _ = force_refine(&mut pos, radii, 1000);
-    resolve_overlaps(&mut pos, radii);
-    let r = enclosing_radius(&pos, radii);
-    (pos, r)
+    optimize(&mut pos, radii, rng)
+}
+
+fn optimize(positions: &mut Vec<Point>, radii: &[f64], rng: &mut XorShift) -> (Vec<Point>, f64) {
+    let _ = force_refine(positions, radii, 2000);
+    let _ = simulated_annealing(positions, radii, rng);
+    let _ = force_refine(positions, radii, 1000);
+    resolve_overlaps(positions, radii);
+    let r = enclosing_radius(positions, radii);
+    (positions.clone(), r)
+}
+
+/// Ring placement: put the N largest equal circles equally spaced on a ring,
+/// then greedily place the rest. This directly captures the optimal topology
+/// for patterns like 3×large + N×small.
+fn ring_start(radii: &[f64]) -> Vec<Point> {
+    let n = radii.len();
+    let mut positions = vec![Point { x: 0.0, y: 0.0 }; n];
+
+    // Find the largest radius and count how many circles share it
+    let max_r = radii.iter().cloned().fold(0.0f64, f64::max);
+    let large_count = radii.iter().filter(|&&r| (r - max_r).abs() < 1e-9).count();
+
+    // Only use ring strategy if there are 3+ equal largest circles
+    if large_count < 3 || large_count == n {
+        return greedy(radii, &(0..n).collect::<Vec<_>>());
+    }
+
+    // Separate large and small circle indices
+    let mut large_idx: Vec<usize> = Vec::new();
+    let mut small_idx: Vec<usize> = Vec::new();
+    for i in 0..n {
+        if (radii[i] - max_r).abs() < 1e-9 {
+            large_idx.push(i);
+        } else {
+            small_idx.push(i);
+        }
+    }
+
+    // Place large circles on a ring
+    // Ring radius d such that adjacent circles touch: d * sin(π/N) = r, so d = r / sin(π/N)
+    let d = max_r / (std::f64::consts::PI / large_count as f64).sin();
+    for (i, &idx) in large_idx.iter().enumerate() {
+        let angle = 2.0 * std::f64::consts::PI * i as f64 / large_count as f64;
+        positions[idx] = Point { x: d * angle.cos(), y: d * angle.sin() };
+    }
+
+    // Greedily place remaining small circles among the large ones
+    let mut placed: Vec<usize> = large_idx.clone();
+    for &idx in &small_idx {
+        let r = radii[idx];
+        let mut best_pos = Point { x: 0.0, y: 0.0 };
+        let mut best_est = f64::INFINITY;
+
+        // Tangent to pairs of placed circles
+        for a in 0..placed.len() {
+            for b in (a + 1)..placed.len() {
+                let ia = placed[a]; let ib = placed[b];
+                for cand in circle_intersection(&positions[ia], radii[ia] + r, &positions[ib], radii[ib] + r) {
+                    let mut ok = true;
+                    for &j in &placed {
+                        if dist(&cand, &positions[j]) < r + radii[j] - 1e-9 { ok = false; break; }
+                    }
+                    if ok {
+                        let est = norm(&cand) + r;
+                        if est < best_est { best_est = est; best_pos = cand; }
+                    }
+                }
+            }
+        }
+
+        // Also try toward origin from each placed circle
+        for &ia in &placed {
+            let ca = &positions[ia];
+            let da = radii[ia] + r;
+            let ang = ca.y.atan2(ca.x);
+            for cand in [
+                Point { x: ca.x - ang.cos() * da, y: ca.y - ang.sin() * da },
+            ] {
+                let mut ok = true;
+                for &j in &placed {
+                    if j == ia { continue; }
+                    if dist(&cand, &positions[j]) < r + radii[j] - 1e-9 { ok = false; break; }
+                }
+                if ok {
+                    let est = norm(&cand) + r;
+                    if est < best_est { best_est = est; best_pos = cand; }
+                }
+            }
+        }
+
+        positions[idx] = best_pos;
+        placed.push(idx);
+    }
+
+    recenter(&mut positions);
+    positions
 }
 
 // ── WASM export ───────────────────────────────────────────
@@ -381,6 +472,13 @@ pub fn pack_circles(radii: Vec<f64>) -> JsValue {
 
     let mut best_pos = vec![];
     let mut best_r = f64::INFINITY;
+
+    // Try ring placement first (catches 3-large + N-small pattern)
+    {
+        let ring_pos = ring_start(&radii);
+        let (pos, r) = optimize(&mut ring_pos.clone(), &radii, &mut rng);
+        if r < best_r { best_r = r; best_pos = pos; }
+    }
 
     for order in &orders {
         let (pos, r) = run_one(&radii, order, &mut rng);

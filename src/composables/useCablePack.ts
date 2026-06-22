@@ -1,7 +1,6 @@
 import { ref, computed, watch, shallowRef } from 'vue'
 import { packCircles, repackAfterDrag } from '@/utils/circlePacking'
 import type { Point, PackingResult } from '@/utils/circlePacking'
-import { initWasm, packCirclesWasm } from '@/wasm/cablepackWasm'
 
 // ────────────────────────── Types ──────────────────────────
 
@@ -71,24 +70,13 @@ export function useCablePack() {
 
   const outerDiameter = computed<number>(() => Math.round(packing.value.enclosingR * 2 * 100) / 100)
 
-  // ── Core engine: JS first (currently gives better results), WASM as enhancer ──
-  function computePacking(r: number[]): PackingResult {
-    if (r.length === 0) return { positions: [], enclosingR: 0 }
-
-    // Primary: JS solver (ring placement + compressive refine + QPQH jumps)
-    const jsResult = packCircles(r)
-
-    // Enhancement: also try WASM, keep whichever is tighter
-    const wasmResult = packCirclesWasm(r)
-    if (wasmResult && wasmResult.enclosingR < jsResult.enclosingR) {
-      return wasmResult
-    }
-
-    return jsResult
-  }
-
   function recalculate() {
-    packing.value = computePacking(radii.value)
+    const r = radii.value
+    if (r.length === 0) {
+      packing.value = { positions: [], enclosingR: 0 }
+    } else {
+      packing.value = packCircles(r)
+    }
   }
 
   // Auto-recalculate + persist when cables change (debounced)
@@ -101,15 +89,7 @@ export function useCablePack() {
     }, 250)
   }, { deep: true })
 
-  // Kick off WASM loading (async, non-blocking)
-  initWasm().then(() => {
-    // Re-run with WASM once it's ready
-    if (cables.value.length > 0) {
-      packing.value = computePacking(radii.value)
-    }
-  })
-
-  // Initial calculation (JS solver while WASM loads)
+  // Initial calculation
   recalculate()
 
   // ── Cable CRUD ──
@@ -190,7 +170,7 @@ export function useCablePack() {
   /** Re-run the full greedy+refine algorithm from scratch. */
   function fullRecalculate() {
     if (debounceTimer) clearTimeout(debounceTimer)
-    packing.value = computePacking(radii.value)
+    recalculate()
     hasManuallyAdjusted.value = false
   }
 

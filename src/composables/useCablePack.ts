@@ -1,6 +1,7 @@
 import { ref, computed, watch, shallowRef } from 'vue'
 import { packCircles, repackAfterDrag } from '@/utils/circlePacking'
 import type { Point, PackingResult } from '@/utils/circlePacking'
+import { initWasm, isWasmReady, packCirclesWasm } from '@/wasm/cablepackWasm'
 
 // ────────────────────────── Types ──────────────────────────
 
@@ -70,14 +71,23 @@ export function useCablePack() {
 
   const outerDiameter = computed<number>(() => Math.round(packing.value.enclosingR * 2 * 100) / 100)
 
-  // ── Recalculate packing ──
+  // ── Recalculate packing (WASM first, JS fallback) ──
   function recalculate() {
     const r = radii.value
     if (r.length === 0) {
       packing.value = { positions: [], enclosingR: 0 }
-    } else {
-      packing.value = packCircles(r)
+      return
     }
+
+    // Try WASM solver first
+    const wasmResult = packCirclesWasm(r)
+    if (wasmResult) {
+      packing.value = wasmResult
+      return
+    }
+
+    // Fall back to JS solver
+    packing.value = packCircles(r)
   }
 
   // Auto-recalculate + persist when cables change (debounced)
@@ -90,7 +100,19 @@ export function useCablePack() {
     }, 250)
   }, { deep: true })
 
-  // Initial calculation
+  // Kick off WASM loading (async, non-blocking)
+  initWasm().then(() => {
+    // Re-run with WASM once it's ready (if cables changed during load this would overwrite, but initWasm is fast)
+    if (cables.value.length > 0) {
+      const r = radii.value
+      const wasmResult = packCirclesWasm(r)
+      if (wasmResult) {
+        packing.value = wasmResult
+      }
+    }
+  })
+
+  // Initial calculation (JS solver while WASM loads)
   recalculate()
 
   // ── Cable CRUD ──

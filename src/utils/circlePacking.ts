@@ -257,32 +257,94 @@ function compressiveRefine(positions: Point[], radii: number[], maxIter = 1200):
     }
 
     // ── 4. Shrink target when stable ──
-    if (maxOverlap < 1e-5) {
-      targetR *= 0.9985 // shrink ~0.15% per stable iteration
+    if (maxOverlap < 1e-6) {
+      targetR *= 0.9985
       stableCount++
     } else {
-      targetR = Math.max(targetR, curR * 0.92) // relax if overlapping
+      // Overlaps present: relax target, don't compress further
+      targetR = Math.max(targetR, curR * 0.95)
       stableCount = 0
     }
 
     // ── 5. Occasional shake-up to escape local minima ──
-    if (stableCount > 300 && maxOverlap < 1e-7 && maxWallPen < 1e-7) {
-      // Converged — try a small random perturbation
+    if (stableCount > 400 && maxOverlap < 1e-8 && maxWallPen < 1e-8) {
       const shakeRng = mulberry32(iter * 131 + Math.floor(curR * 1000))
-      const shakeAmplitude = curR * 0.003
+      const shakeAmplitude = curR * 0.002
       for (let i = 0; i < n; i++) {
         positions[i].x += (shakeRng() - 0.5) * shakeAmplitude
         positions[i].y += (shakeRng() - 0.5) * shakeAmplitude
       }
-      targetR = curR * 0.98
+      targetR = curR * 0.99
       stableCount = 0
     }
 
-    // ── 6. Early exit ──
-    if (maxOverlap < 1e-8 && maxWallPen < 1e-8 && stableCount > 100) break
+    // ── 6. Early exit (only when truly converged) ──
+    if (maxOverlap < 1e-9 && maxWallPen < 1e-9 && stableCount > 150) break
   }
 
   return enclosingRadius(positions, radii)
+}
+
+/**
+ * Pure overlap resolution — no compression, no centripetal.
+ * Guarantees that all circles are separated after this step.
+ */
+function resolveAllOverlaps(positions: Point[], radii: number[], maxIter = 800): void {
+  const n = positions.length
+  if (n <= 1) return
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    let maxOverlap = 0
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = positions[i].x - positions[j].x
+        const dy = positions[i].y - positions[j].y
+        const d = Math.sqrt(dx * dx + dy * dy)
+        const minD = radii[i] + radii[j]
+
+        if (d < minD && d > 1e-10) {
+          const overlap = minD - d
+          if (overlap > maxOverlap) maxOverlap = overlap
+          // Push apart along the line connecting centers
+          const halfMove = overlap * 0.55
+          positions[i].x += (dx / d) * halfMove
+          positions[i].y += (dy / d) * halfMove
+          positions[j].x -= (dx / d) * halfMove
+          positions[j].y -= (dy / d) * halfMove
+        } else if (d < 1e-10) {
+          // Coincident — nudge apart
+          positions[i].x += 0.01
+          positions[j].x -= 0.01
+        }
+      }
+    }
+
+    if (maxOverlap < 1e-9) break
+  }
+
+  // Safety: if overlaps still exist, inflate enclosing radius to be safe
+  const remainingOverlap = computeMaxOverlap(positions, radii)
+  if (remainingOverlap > 1e-6) {
+    // Last resort: scale all positions outward proportionally
+    const scale = 1 + remainingOverlap / enclosingRadius(positions, radii)
+    for (const p of positions) {
+      p.x *= scale
+      p.y *= scale
+    }
+  }
+}
+
+function computeMaxOverlap(positions: Point[], radii: number[]): number {
+  let maxO = 0
+  for (let i = 0; i < positions.length; i++) {
+    for (let j = i + 1; j < positions.length; j++) {
+      const d = dist(positions[i], positions[j])
+      const minD = radii[i] + radii[j]
+      if (d < minD) maxO = Math.max(maxO, minD - d)
+    }
+  }
+  return maxO
 }
 
 // ──────────────────── Phase 3: Multi-start pick best ───────
@@ -293,7 +355,9 @@ function compressiveRefine(positions: Point[], radii: number[], maxIter = 1200):
  */
 function runOnePass(radii: number[], order: number[]): { positions: Point[]; enclosingR: number } {
   const positions = greedyWithOrder(radii, order)
-  const enclosingR = compressiveRefine(positions, radii)
+  compressiveRefine(positions, radii)
+  resolveAllOverlaps(positions, radii)
+  const enclosingR = enclosingRadius(positions, radii)
   return { positions, enclosingR }
 }
 
@@ -411,5 +475,6 @@ export function repackAfterDrag(radii: number[], positions: Point[]): number {
     if (maxOverlap < 1e-6 && maxWallPen < 1e-6) break
   }
 
+  resolveAllOverlaps(positions, radii)
   return enclosingRadius(positions, radii)
 }

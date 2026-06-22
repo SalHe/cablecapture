@@ -21,6 +21,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: solver
+
+      - name: Setup wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: Build WASM solver
+        run: cd solver && wasm-pack build --target web --release --no-opt
+        env:
+          WASM_PACK_NO_OPT: 1
+
+      - name: Copy WASM artifacts
+        run: |
+          cp solver/pkg/cablepack_bg.wasm public/cablepack.wasm
+          cp solver/pkg/cablepack.js src/wasm/cablepack.js
+          cp solver/pkg/cablepack.d.ts src/wasm/cablepack.d.ts
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -35,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --config.onlyBuiltDependencies=esbuild
 
-      - name: Build
+      - name: Build frontend
         run: pnpm build
 
       - name: Deploy to gh-pages

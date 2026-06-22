@@ -123,13 +123,25 @@ export function useCablePack() {
   function removeOneFromGroup(ids: number[]) {
     if (cables.value.length <= 1) return
     const idSet = new Set(ids)
-    // Find the last cable whose id is in the set
     let found = false
     cables.value = cables.value.filter(c => {
       if (found || !idSet.has(c.id)) return true
       found = true
       return false
     })
+  }
+
+  /** Set the exact count for a group (used by direct count editing). */
+  function setGroupCount(ids: number[], diameter: number, newCount: number) {
+    const count = Math.max(1, Math.min(newCount, 999))
+    const diff = count - ids.length
+    if (diff > 0) {
+      addCables(diameter, diff)
+    } else if (diff < 0) {
+      const toRemove = new Set(ids.slice(diff)) // diff is negative, slice from end
+      const remaining = cables.value.filter(c => !toRemove.has(c.id))
+      if (remaining.length > 0) cables.value = remaining
+    }
   }
 
   /** Remove all cables. */
@@ -259,6 +271,7 @@ export function useCablePack() {
     removeCable,
     removeCableGroup,
     removeOneFromGroup,
+    setGroupCount,
     clearAll,
     updateCable,
     updateCableGroup,

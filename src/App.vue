@@ -14,6 +14,7 @@ const {
   addCables,
   removeCableGroup,
   removeOneFromGroup,
+  setGroupCount,
   clearAll,
   updateCableGroup,
   onDragEnd,
@@ -75,6 +76,7 @@ function refreshSnapshots() {
           @add="addCables"
           @remove-group="removeCableGroup"
           @remove-one="removeOneFromGroup"
+          @set-count="setGroupCount"
           @clear-all="clearAll"
           @update-group="updateCableGroup"
           @recalculate="fullRecalculate"

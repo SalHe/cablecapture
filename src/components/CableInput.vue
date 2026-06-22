@@ -24,6 +24,7 @@ const emit = defineEmits<{
   add: [diameter: number, quantity: number]
   removeGroup: [ids: number[]]
   removeOne: [ids: number[]]
+  setCount: [ids: number[], diameter: number, newCount: number]
   clearAll: []
   updateGroup: [ids: number[], diameter: number]
   recalculate: []
@@ -107,6 +108,19 @@ function onGroupDiameterChange(ids: number[], value: string) {
   const num = parseFloat(value)
   if (!isNaN(num) && num > 0) {
     emit('updateGroup', ids, num)
+  }
+}
+
+function onCountChange(ids: number[], diameter: number, value: string) {
+  const num = parseInt(value, 10)
+  if (!isNaN(num) && num >= 1) {
+    emit('setCount', ids, diameter, num)
+  }
+}
+
+function onCountKeydown(e: KeyboardEvent, ids: number[], diameter: number) {
+  if (e.key === 'Enter') {
+    onCountChange(ids, diameter, (e.target as HTMLInputElement).value)
   }
 }
 
@@ -213,7 +227,19 @@ function toggleCollapsed() {
             aria-label="减少一根"
             @click="emit('removeOne', group.ids)"
           >−</button>
-          <span class="count-badge">{{ group.count }}</span>
+          <input
+            type="number"
+            class="count-input"
+            :value="group.count"
+            min="1"
+            max="999"
+            step="1"
+            inputmode="numeric"
+            aria-label="线缆数量"
+            @input="onCountChange(group.ids, group.diameter, ($event.target as HTMLInputElement).value)"
+            @keydown="onCountKeydown($event, group.ids, group.diameter)"
+            @blur="(e: FocusEvent) => onCountChange(group.ids, group.diameter, (e.target as HTMLInputElement).value)"
+          />
           <button
             class="btn-qty"
             aria-label="增加一根"
@@ -596,19 +622,24 @@ function toggleCollapsed() {
   transform: scale(0.93);
 }
 
-.count-badge {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 28px;
+.count-input {
+  width: 44px;
+  min-width: 44px;
   height: 26px;
-  padding: 0 6px;
+  padding: 0 4px;
   border-radius: 6px;
+  border: 1px solid var(--border);
   background: var(--bg);
   color: var(--accent);
+  text-align: center;
   font-size: 0.8rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.count-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .btn-remove {

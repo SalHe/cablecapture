@@ -12,6 +12,15 @@ export interface Cable {
 // ────────────────────────── Constants ──────────────────────
 
 const STORAGE_KEY = 'cablecapture-cables'
+const SNAPSHOTS_KEY = 'cablecapture-snapshots'
+
+export interface SavedSnapshot {
+  name: string
+  timestamp: number
+  cables: Cable[]
+  positions: Point[]
+  enclosingR: number
+}
 
 function makeDefaultCables(): Cable[] {
   const cables: Cable[] = []
@@ -53,6 +62,7 @@ export function useCablePack() {
   const cables = ref<Cable[]>([...defaults])
   const packing = shallowRef<PackingResult>({ positions: [], enclosingR: 0 })
   const isDragging = ref(false)
+  const hasManuallyAdjusted = ref(false)
   let nextId = defaults.reduce((max, c) => Math.max(max, c.id), 0) + 1
 
   // ── Derived ──
@@ -155,6 +165,72 @@ export function useCablePack() {
 
     const newEnclosingR = repackAfterDrag(r, positions)
     packing.value = { positions, enclosingR: newEnclosingR }
+    hasManuallyAdjusted.value = true
+  }
+
+  /** Re-run the full greedy+refine algorithm from scratch. */
+  function fullRecalculate() {
+    if (debounceTimer) clearTimeout(debounceTimer)
+    const r = radii.value
+    if (r.length === 0) {
+      packing.value = { positions: [], enclosingR: 0 }
+    } else {
+      packing.value = packCircles(r)
+    }
+    hasManuallyAdjusted.value = false
+  }
+
+  // ── Save / Load snapshots ──
+
+  function getSnapshots(): SavedSnapshot[] {
+    try {
+      const raw = localStorage.getItem(SNAPSHOTS_KEY)
+      if (!raw) return []
+      return JSON.parse(raw) as SavedSnapshot[]
+    } catch { return [] }
+  }
+
+  function saveSnapshot(name: string) {
+    const snapshots = getSnapshots()
+    const existing = snapshots.findIndex(s => s.name === name)
+    const snapshot: SavedSnapshot = {
+      name,
+      timestamp: Date.now(),
+      cables: cables.value.map(c => ({ ...c })),
+      positions: packing.value.positions.map(p => ({ ...p })),
+      enclosingR: packing.value.enclosingR,
+    }
+    if (existing >= 0) {
+      snapshots[existing] = snapshot
+    } else {
+      snapshots.push(snapshot)
+    }
+    try { localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(snapshots)) } catch { /* ignore */ }
+    return snapshot
+  }
+
+  function loadSnapshot(name: string): boolean {
+    const snapshots = getSnapshots()
+    const snapshot = snapshots.find(s => s.name === name)
+    if (!snapshot) return false
+
+    // Cancel any pending auto-recalc
+    if (debounceTimer) clearTimeout(debounceTimer)
+    cables.value = snapshot.cables.map(c => ({ ...c }))
+    nextId = cables.value.reduce((max, c) => Math.max(max, c.id), 0) + 1
+    packing.value = {
+      positions: snapshot.positions.map(p => ({ ...p })),
+      enclosingR: snapshot.enclosingR,
+    }
+    hasManuallyAdjusted.value = true
+    // Still save cables to auto-save storage
+    saveToStorage(cables.value)
+    return true
+  }
+
+  function deleteSnapshot(name: string) {
+    const snapshots = getSnapshots().filter(s => s.name !== name)
+    try { localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(snapshots)) } catch { /* ignore */ }
   }
 
   // ── Grouped view (diameter × count) ──
@@ -190,7 +266,13 @@ export function useCablePack() {
     clearAll,
     updateCable,
     updateCableGroup,
+    hasManuallyAdjusted,
     onDragEnd,
+    fullRecalculate,
+    getSnapshots,
+    saveSnapshot,
+    loadSnapshot,
+    deleteSnapshot,
     recalculate,
   }
 }

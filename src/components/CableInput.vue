@@ -18,6 +18,7 @@ function cableColor(index: number): string {
 
 defineProps<{
   cableGroups: CableGroup[]
+  hasManuallyAdjusted: boolean
 }>()
 
 const emit = defineEmits<{
@@ -26,6 +27,7 @@ const emit = defineEmits<{
   removeOne: [ids: number[]]
   clearAll: []
   updateGroup: [ids: number[], diameter: number]
+  recalculate: []
 }>()
 
 // ── Add form state ──
@@ -240,6 +242,14 @@ function toggleCollapsed() {
         @click="emit('clearAll')"
       >
         清空全部
+      </button>
+
+      <button
+        v-if="hasManuallyAdjusted"
+        class="btn-recalc"
+        @click="emit('recalculate')"
+      >
+        重新计算
       </button>
     </div><!-- .panel-content -->
   </section>
@@ -646,6 +656,29 @@ function toggleCollapsed() {
   background: var(--danger);
   color: #fff;
   opacity: 1;
+}
+
+.btn-recalc {
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  transition: all 0.15s;
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+.btn-recalc:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: var(--accent); }
+  50% { border-color: var(--accent-dim); }
 }
 
 .empty-hint {

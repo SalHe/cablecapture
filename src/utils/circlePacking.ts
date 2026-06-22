@@ -1,15 +1,12 @@
 /**
  * Circle Packing Algorithm — packs multiple circles into a minimal enclosing circle.
  *
- * Approach (two-phase):
- *   Phase 1 — Greedy placement: circles are placed one by one (largest first),
- *             each positioned tangent to two already-placed circles.
- *   Phase 2 — Force-directed refinement: overlap-resolving and wall-inward
- *             forces iteratively shrink the enclosing radius.
- *
- * Math references:
- *   - Tangent positions: intersection of two circles (d1 = rᵢ + rₙₑw, d2 = rⱼ + rₙₑw)
- *   - Enclosing radius:  R = max_i( ‖pos_i‖ + r_i )
+ * Approach (three-phase, multi-start):
+ *   Phase 1 — Multi-start greedy placement: tries largest-first + several random
+ *             orderings, keeps the tightest initial layout.
+ *   Phase 2 — Compressive force-directed refinement: strong centripetal forces +
+ *             gradually shrinking target radius squeeze the layout inward.
+ *   Phase 3 — Pick the best across all starts after refinement.
  */
 
 // ────────────────────────── Types ──────────────────────────
@@ -26,156 +23,145 @@ export interface PackingResult {
 
 // ────────────────────────── Geometry Helpers ───────────────
 
-/** Euclidean distance between two 2D points. */
 function dist(a: Point, b: Point): number {
   const dx = a.x - b.x
   const dy = a.y - b.y
   return Math.sqrt(dx * dx + dy * dy)
 }
 
-/** Distance from origin. */
 function norm(p: Point): number {
   return Math.sqrt(p.x * p.x + p.y * p.y)
 }
 
-/**
- * Compute up to two intersection points of two circles.
- * Circle A: center c1 with radius r1, Circle B: center c2 with radius r2.
- * Returns array of 0, 1, or 2 {x, y} points.
- */
+/** Seeded pseudo-random number generator (mulberry32). */
+function mulberry32(seed: number): () => number {
+  return () => {
+    seed |= 0
+    seed = (seed + 0x6d2b79f5) | 0
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Fisher-Yates shuffle using a provided rng. */
+function shuffle<T>(arr: T[], rng: () => number): T[] {
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
 function circleIntersection(c1: Point, r1: number, c2: Point, r2: number): Point[] {
   const d = dist(c1, c2)
   const results: Point[] = []
-
-  // Circles too far apart or one contains the other — no intersection
-  if (d > r1 + r2 + 1e-9 || d < Math.abs(r1 - r2) - 1e-9 || d < 1e-9) {
-    return results
-  }
-
-  // Distance from c1 to the radical line
+  if (d > r1 + r2 + 1e-9 || d < Math.abs(r1 - r2) - 1e-9 || d < 1e-9) return results
   const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d)
   const hSq = r1 * r1 - a * a
   const h = hSq > 0 ? Math.sqrt(hSq) : 0
-
-  // Midpoint along the line c1 → c2
   const dx = (c2.x - c1.x) / d
   const dy = (c2.y - c1.y) / d
   const mx = c1.x + a * dx
   const my = c1.y + a * dy
-
-  // Perpendicular direction
   const px = -dy
   const py = dx
-
   results.push({ x: mx + h * px, y: my + h * py })
-  if (h > 1e-9) {
-    results.push({ x: mx - h * px, y: my - h * py })
-  }
-
+  if (h > 1e-9) results.push({ x: mx - h * px, y: my - h * py })
   return results
 }
 
-// ──────────────────── Packing State ────────────────────────
+// ──────────────────── State helpers ────────────────────────
 
-/**
- * Calculate the minimum enclosing radius for the current configuration.
- */
 function enclosingRadius(positions: Point[], radii: number[]): number {
   let maxR = 0
   for (let i = 0; i < positions.length; i++) {
-    if (!positions[i]) continue // skip unplaced circles during greedy phase
+    if (!positions[i]) continue
     const r = norm(positions[i]) + radii[i]
     if (r > maxR) maxR = r
   }
   return maxR
 }
 
-/**
- * Check whether circle `idx` overlaps any already-placed circle.
- */
 function hasOverlap(positions: Point[], radii: number[], idx: number, placed: Set<number>): boolean {
   for (const j of placed) {
-    const d = dist(positions[idx], positions[j])
-    if (d < radii[idx] + radii[j] - 1e-9) return true
+    if (dist(positions[idx], positions[j]) < radii[idx] + radii[j] - 1e-9) return true
   }
   return false
+}
+
+function centroid(positions: Point[]): Point {
+  let cx = 0, cy = 0
+  const n = positions.length
+  for (const p of positions) { cx += p.x; cy += p.y }
+  return { x: cx / n, y: cy / n }
+}
+
+function recenter(positions: Point[]) {
+  const c = centroid(positions)
+  for (const p of positions) { p.x -= c.x; p.y -= c.y }
 }
 
 // ──────────────────── Phase 1: Greedy Placement ────────────
 
 /**
- * Greedy circle packing — places circles largest-first, each tangent to
- * two existing circles (or one + origin), picking the position that
- * minimises the enclosing radius.
+ * Greedy placement with a given circle ordering.
+ * `order` maps sorted-index → original-index (determines placement sequence).
  */
-function greedyPack(radii: number[]): { positions: Point[]; enclosingR: number } {
+function greedyWithOrder(radii: number[], order: number[]): Point[] {
   const n = radii.length
-  if (n === 0) return { positions: [], enclosingR: 0 }
-  if (n === 1) return { positions: [{ x: 0, y: 0 }], enclosingR: radii[0] }
-
-  // Sort by radius descending, remember original indices
-  const indexed = radii.map((r, i) => ({ r, idx: i }))
-  indexed.sort((a, b) => b.r - a.r)
-
   const positions: Point[] = new Array(n)
 
-  // Place largest circle at origin
-  positions[indexed[0].idx] = { x: 0, y: 0 }
-  const placed = new Set<number>([indexed[0].idx])
+  // Place first circle at origin
+  positions[order[0]] = { x: 0, y: 0 }
+  const placed = new Set<number>([order[0]])
 
   for (let k = 1; k < n; k++) {
-    const { r, idx } = indexed[k]
-    let bestPos: Point = { x: 0, y: r + radii[indexed[0].idx] } // fallback: stack on largest
+    const idx = order[k]
+    const r = radii[idx]
+    let bestPos: Point = { x: 0, y: r + radii[order[0]] }
     let bestR = Infinity
 
     const placedArr = [...placed]
 
-    // Try touching every pair of already-placed circles
+    // Try tangent to every pair of already-placed circles
     for (let a = 0; a < placedArr.length; a++) {
       for (let b = a + 1; b < placedArr.length; b++) {
         const ia = placedArr[a]
         const ib = placedArr[b]
         const candidates = circleIntersection(
           positions[ia], radii[ia] + r,
-          positions[ib], radii[ib] + r
+          positions[ib], radii[ib] + r,
         )
         for (const pos of candidates) {
           positions[idx] = pos
           if (!hasOverlap(positions, radii, idx, placed)) {
             const er = enclosingRadius(positions, radii)
-            if (er < bestR) {
-              bestR = er
-              bestPos = { ...pos }
-            }
+            if (er < bestR) { bestR = er; bestPos = { ...pos } }
           }
         }
       }
     }
 
-    // Also try touching one existing circle + origin-direction constraint
+    // Try touching one existing circle, pulled toward origin
     for (const ia of placedArr) {
       const ca = positions[ia]
       const da = radii[ia] + r
       const ang = Math.atan2(ca.y, ca.x)
-
-      const testPos: Point = { x: ca.x + Math.cos(ang) * da, y: ca.y + Math.sin(ang) * da }
-      positions[idx] = testPos
+      // Toward origin side
+      const toward: Point = { x: ca.x - Math.cos(ang) * da, y: ca.y - Math.sin(ang) * da }
+      positions[idx] = toward
       if (!hasOverlap(positions, radii, idx, placed)) {
         const er = enclosingRadius(positions, radii)
-        if (er < bestR) {
-          bestR = er
-          bestPos = { ...testPos }
-        }
+        if (er < bestR) { bestR = er; bestPos = { ...toward } }
       }
-
-      const testPos2: Point = { x: ca.x - Math.cos(ang) * da, y: ca.y - Math.sin(ang) * da }
-      positions[idx] = testPos2
+      // Away from origin side
+      const away: Point = { x: ca.x + Math.cos(ang) * da, y: ca.y + Math.sin(ang) * da }
+      positions[idx] = away
       if (!hasOverlap(positions, radii, idx, placed)) {
         const er = enclosingRadius(positions, radii)
-        if (er < bestR) {
-          bestR = er
-          bestPos = { ...testPos2 }
-        }
+        if (er < bestR) { bestR = er; bestPos = { ...away } }
       }
     }
 
@@ -183,34 +169,31 @@ function greedyPack(radii: number[]): { positions: Point[]; enclosingR: number }
     placed.add(idx)
   }
 
-  // Centre the entire configuration (translate centroid to origin)
-  let cx = 0, cy = 0
-  for (const p of positions) { cx += p.x; cy += p.y }
-  cx /= n; cy /= n
-  for (const p of positions) { p.x -= cx; p.y -= cy }
-
-  return {
-    positions,
-    enclosingR: enclosingRadius(positions, radii)
-  }
+  recenter(positions)
+  return positions
 }
 
-// ──────────────────── Phase 2: Force-Directed Refinement ───
+// ──────────────────── Phase 2: Compressive Refinement ──────
 
 /**
- * Force-directed refinement: iteratively resolve overlaps and pull circles inward.
- * Returns the refined enclosing radius.
+ * Compressive force-directed refinement.
+ * Uses strong centripetal forces + a gradually-shrinking target radius
+ * to squeeze circles into the tightest possible configuration.
  */
-function forceRefine(positions: Point[], radii: number[], maxIter = 400): number {
+function compressiveRefine(positions: Point[], radii: number[], maxIter = 1200): number {
   const n = positions.length
   if (n <= 1) return enclosingRadius(positions, radii)
+
+  let curR = enclosingRadius(positions, radii)
+  // Aggressive initial target: try to shrink by 15%
+  let targetR = curR * 0.85
+  let stableCount = 0
 
   for (let iter = 0; iter < maxIter; iter++) {
     const forces: Point[] = Array.from({ length: n }, () => ({ x: 0, y: 0 }))
     let maxOverlap = 0
-    let maxWallPen = 0
 
-    // ── Repulsive force (resolve overlaps) ──
+    // ── 1. Strong repulsive forces (resolve overlaps) ──
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const dx = positions[i].x - positions[j].x
@@ -221,91 +204,212 @@ function forceRefine(positions: Point[], radii: number[], maxIter = 400): number
         if (d < minD && d > 1e-10) {
           const overlap = minD - d
           if (overlap > maxOverlap) maxOverlap = overlap
-          const fx = (dx / d) * overlap * 0.55
-          const fy = (dy / d) * overlap * 0.55
-          forces[i].x += fx
-          forces[i].y += fy
-          forces[j].x -= fx
-          forces[j].y -= fy
+          // Softer spring for small overlaps, stronger for large ones
+          const stiffness = 0.45 + 0.3 * Math.min(overlap / Math.max(radii[i], radii[j], 0.01), 1)
+          const f = overlap * stiffness
+          forces[i].x += (dx / d) * f
+          forces[i].y += (dy / d) * f
+          forces[j].x -= (dx / d) * f
+          forces[j].y -= (dy / d) * f
         } else if (d < 1e-10) {
-          // Coincident centres — nudge apart
-          forces[i].x += 0.1
-          forces[i].y += 0.1
-          forces[j].x -= 0.1
-          forces[j].y -= 0.1
+          forces[i].x += 0.05
+          forces[i].y += 0.05
+          forces[j].x -= 0.05
+          forces[j].y -= 0.05
         }
       }
     }
 
-    // ── Current enclosing radius ──
-    const curR = enclosingRadius(positions, radii)
+    // Update current enclosing radius
+    curR = enclosingRadius(positions, radii)
 
-    // ── Wall force (push inward if beyond enclosing circle) ──
+    // ── 2. Centripetal + wall forces ──
+    let maxWallPen = 0
+    const effectiveTarget = Math.max(targetR, curR * 0.75) // don't try too hard
+
     for (let i = 0; i < n; i++) {
       const d = norm(positions[i])
-      const maxD = curR - radii[i]
-      if (d > maxD && d > 1e-10) {
+      if (d < 1e-10) continue
+
+      // Centripetal pull — stronger for circles further from center
+      const centripetalStrength = 0.015 + d * 0.02
+      forces[i].x -= (positions[i].x / d) * centripetalStrength
+      forces[i].y -= (positions[i].y / d) * centripetalStrength
+
+      // Wall force: push inside the target radius
+      const maxD = effectiveTarget - radii[i]
+      if (d > maxD) {
         const pen = d - maxD
         if (pen > maxWallPen) maxWallPen = pen
-        forces[i].x -= (positions[i].x / d) * pen * 0.65
-        forces[i].y -= (positions[i].y / d) * pen * 0.65
-      }
-      // Very slight centripetal pull
-      if (d > 1e-10) {
-        forces[i].x -= positions[i].x * 0.0008
-        forces[i].y -= positions[i].y * 0.0008
+        // Strong wall force
+        const wallStrength = 0.6 + pen * 0.3
+        forces[i].x -= (positions[i].x / d) * pen * wallStrength
+        forces[i].y -= (positions[i].y / d) * pen * wallStrength
       }
     }
 
-    // ── Apply forces with adaptive damping ──
-    const damping = 0.92
+    // ── 3. Apply forces ──
+    // Adaptive damping: higher when overlaps are small (stable), lower when resolving
+    const damping = maxOverlap > 0.01 ? 0.75 : (maxWallPen > 0.001 ? 0.85 : 0.7)
     for (let i = 0; i < n; i++) {
       positions[i].x += forces[i].x * damping
       positions[i].y += forces[i].y * damping
     }
 
-    // ── Early exit if stable ──
-    if (maxOverlap < 1e-6 && maxWallPen < 1e-6) break
+    // ── 4. Shrink target when stable ──
+    if (maxOverlap < 1e-5) {
+      targetR *= 0.9985 // shrink ~0.15% per stable iteration
+      stableCount++
+    } else {
+      targetR = Math.max(targetR, curR * 0.92) // relax if overlapping
+      stableCount = 0
+    }
+
+    // ── 5. Occasional shake-up to escape local minima ──
+    if (stableCount > 300 && maxOverlap < 1e-7 && maxWallPen < 1e-7) {
+      // Converged — try a small random perturbation
+      const shakeRng = mulberry32(iter * 131 + Math.floor(curR * 1000))
+      const shakeAmplitude = curR * 0.003
+      for (let i = 0; i < n; i++) {
+        positions[i].x += (shakeRng() - 0.5) * shakeAmplitude
+        positions[i].y += (shakeRng() - 0.5) * shakeAmplitude
+      }
+      targetR = curR * 0.98
+      stableCount = 0
+    }
+
+    // ── 6. Early exit ──
+    if (maxOverlap < 1e-8 && maxWallPen < 1e-8 && stableCount > 100) break
   }
 
   return enclosingRadius(positions, radii)
 }
 
+// ──────────────────── Phase 3: Multi-start pick best ───────
+
+/**
+ * Run one full greedy + refine pipeline and return the enclosing radius.
+ * Returns positions (mutated in place) and final enclosing R.
+ */
+function runOnePass(radii: number[], order: number[]): { positions: Point[]; enclosingR: number } {
+  const positions = greedyWithOrder(radii, order)
+  const enclosingR = compressiveRefine(positions, radii)
+  return { positions, enclosingR }
+}
+
 // ──────────────────── Public API ───────────────────────────
 
 /**
- * Main entry point.
+ * Pack circles into a minimal enclosing circle.
  *
- * @param radii — radii of each cable (half its diameter)
- * @returns `positions[i]` is the centre of cable `i`, and `enclosingR` is the
- *   minimum enclosing outer radius.  The outer diameter = 2 × enclosingR.
+ * Uses multi-start: tries largest-first ordering + several random orderings,
+ * runs compressive force-refinement on each, keeps the tightest result.
  */
 export function packCircles(radii: number[]): PackingResult {
   if (!radii || radii.length === 0) {
     return { positions: [], enclosingR: 0 }
   }
+  if (radii.length === 1) {
+    return { positions: [{ x: 0, y: 0 }], enclosingR: radii[0] }
+  }
 
-  // Deep-copy radii so we don't mutate caller's array
   const r = [...radii]
+  const n = r.length
 
-  // Phase 1: greedy initial layout
-  const result = greedyPack(r)
+  // Build orderings to try
+  const indices = r.map((_, i) => i)
 
-  // Phase 2: force-directed refinement
-  result.enclosingR = forceRefine(result.positions, r)
+  // 1. Largest-first (stable, good baseline)
+  const largestFirst = [...indices].sort((a, b) => r[b] - r[a])
 
-  return result
+  // 2. Smallest-first (sometimes works better for many small + few large)
+  const smallestFirst = [...indices].sort((a, b) => r[a] - r[b])
+
+  // 3-7. Random orderings
+  const numRandom = Math.min(5, Math.max(2, Math.floor(20 / n)))
+  const rng = mulberry32(Math.floor(Date.now() % 2147483647))
+  const randomOrders: number[][] = []
+  for (let i = 0; i < numRandom; i++) {
+    randomOrders.push(shuffle(indices, rng))
+  }
+
+  const orderings = [largestFirst, smallestFirst, ...randomOrders]
+
+  // Run all candidates, clone positions for best result
+  let bestResult: PackingResult | null = null
+
+  for (const order of orderings) {
+    const result = runOnePass(r, order)
+    if (!bestResult || result.enclosingR < bestResult.enclosingR) {
+      // Deep-clone the positions (they were mutated in-place)
+      bestResult = {
+        positions: result.positions.map(p => ({ ...p })),
+        enclosingR: result.enclosingR,
+      }
+    }
+    // Re-use the same radii array but fresh positions each time
+  }
+
+  return bestResult!
 }
 
 /**
  * Re-pack after the user dragged one cable to a new position.
- * All other cables stay where they are; only the force-refine step runs
- * (which adjusts positions and returns the new enclosing radius).
- *
- * @param radii  — cable radii
- * @param positions — current positions (with one updated from drag)
- * @returns new enclosing radius
+ * Runs a shorter compressive refinement preserving manual adjustments.
  */
 export function repackAfterDrag(radii: number[], positions: Point[]): number {
-  return forceRefine(positions, radii, 250)
+  // Quick refinement — fewer iterations, preserve user intent
+  const n = positions.length
+  if (n <= 1) return enclosingRadius(positions, radii)
+
+  for (let iter = 0; iter < 300; iter++) {
+    const forces: Point[] = Array.from({ length: n }, () => ({ x: 0, y: 0 }))
+    let maxOverlap = 0
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dx = positions[i].x - positions[j].x
+        const dy = positions[i].y - positions[j].y
+        const d = Math.sqrt(dx * dx + dy * dy)
+        const minD = radii[i] + radii[j]
+        if (d < minD && d > 1e-10) {
+          const overlap = minD - d
+          if (overlap > maxOverlap) maxOverlap = overlap
+          const f = overlap * 0.5
+          forces[i].x += (dx / d) * f
+          forces[i].y += (dy / d) * f
+          forces[j].x -= (dx / d) * f
+          forces[j].y -= (dy / d) * f
+        }
+      }
+    }
+
+    const curR = enclosingRadius(positions, radii)
+    let maxWallPen = 0
+
+    for (let i = 0; i < n; i++) {
+      const d = norm(positions[i])
+      if (d < 1e-10) continue
+      const maxD = curR - radii[i]
+      if (d > maxD) {
+        const pen = d - maxD
+        if (pen > maxWallPen) maxWallPen = pen
+        forces[i].x -= (positions[i].x / d) * pen * 0.7
+        forces[i].y -= (positions[i].y / d) * pen * 0.7
+      }
+      // Light centripetal
+      forces[i].x -= positions[i].x * 0.003
+      forces[i].y -= positions[i].y * 0.003
+    }
+
+    const damping = 0.88
+    for (let i = 0; i < n; i++) {
+      positions[i].x += forces[i].x * damping
+      positions[i].y += forces[i].y * damping
+    }
+
+    if (maxOverlap < 1e-6 && maxWallPen < 1e-6) break
+  }
+
+  return enclosingRadius(positions, radii)
 }

@@ -254,59 +254,6 @@ fn force_refine(positions: &mut [Point], radii: &[f64], max_iter: usize) -> f64 
     best_r
 }
 
-// ── Phase 3: Simulated Annealing ──────────────────────────
-
-fn simulated_annealing(positions: &mut [Point], radii: &[f64], rng: &mut XorShift) -> f64 {
-    let n = positions.len();
-    if n <= 2 { return enclosing_radius(positions, radii); }
-
-    let mut cur_r = enclosing_radius(positions, radii);
-    let mut best_r = cur_r;
-    let mut best_pos = positions.to_vec();
-    let mut cur_pos = positions.to_vec();
-    let mut temp = cur_r * 0.08;
-    let cooling = 0.995;
-    let max_iter = 3000;
-
-    for _ in 0..max_iter {
-        let idx = (rng.f64() * n as f64) as usize;
-        let scale = temp * 0.3;
-        let nx = cur_pos[idx].x + (rng.f64() - 0.5) * scale;
-        let ny = cur_pos[idx].y + (rng.f64() - 0.5) * scale;
-
-        let old = cur_pos[idx].clone();
-        cur_pos[idx] = Point { x: nx, y: ny };
-
-        let mut max_ov: f64 = 0.0;
-        for j in 0..n {
-            if j == idx { continue; }
-            let d = dist(&cur_pos[idx], &cur_pos[j]);
-            let md = radii[idx] + radii[j];
-            if d < md { max_ov = max_ov.max(md - d); }
-        }
-
-        let new_r = enclosing_radius(&cur_pos, radii);
-        let delta = new_r + max_ov * 5.0 - cur_r;
-
-        if delta < 0.0 || rng.f64() < (-delta / temp.max(1e-12)).exp() {
-            cur_r = new_r;
-            positions[idx] = cur_pos[idx].clone();
-            if cur_r < best_r && max_ov < 1e-6 {
-                best_r = cur_r;
-                best_pos = cur_pos.clone();
-            }
-        } else {
-            cur_pos[idx] = old;
-        }
-
-        temp *= cooling;
-        if temp < 1e-10 { break; }
-    }
-
-    positions.clone_from_slice(&best_pos);
-    best_r
-}
-
 // ── Overlap safety ─────────────────────────────────────────
 
 fn resolve_overlaps(positions: &mut [Point], radii: &[f64]) {
@@ -346,10 +293,8 @@ fn run_one(radii: &[f64], order: &[usize], rng: &mut XorShift) -> (Vec<Point>, f
     optimize(&mut pos, radii, rng)
 }
 
-fn optimize(positions: &mut Vec<Point>, radii: &[f64], rng: &mut XorShift) -> (Vec<Point>, f64) {
-    let _ = force_refine(positions, radii, 2000);
-    let _ = simulated_annealing(positions, radii, rng);
-    let _ = force_refine(positions, radii, 1000);
+fn optimize(positions: &mut Vec<Point>, radii: &[f64], _rng: &mut XorShift) -> (Vec<Point>, f64) {
+    let _ = force_refine(positions, radii, 3000);
     resolve_overlaps(positions, radii);
     let r = enclosing_radius(positions, radii);
     (positions.clone(), r)

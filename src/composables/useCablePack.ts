@@ -71,14 +71,20 @@ export function useCablePack() {
 
   const outerDiameter = computed<number>(() => Math.round(packing.value.enclosingR * 2 * 100) / 100)
 
-  // ── Core engine: WASM first, JS fallback ──
+  // ── Core engine: JS first (currently gives better results), WASM as enhancer ──
   function computePacking(r: number[]): PackingResult {
     if (r.length === 0) return { positions: [], enclosingR: 0 }
 
-    const wasmResult = packCirclesWasm(r)
-    if (wasmResult) return wasmResult
+    // Primary: JS solver (ring placement + compressive refine + QPQH jumps)
+    const jsResult = packCircles(r)
 
-    return packCircles(r)
+    // Enhancement: also try WASM, keep whichever is tighter
+    const wasmResult = packCirclesWasm(r)
+    if (wasmResult && wasmResult.enclosingR < jsResult.enclosingR) {
+      return wasmResult
+    }
+
+    return jsResult
   }
 
   function recalculate() {

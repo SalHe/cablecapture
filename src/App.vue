@@ -58,7 +58,6 @@ function onDeleteSnapshot(name: string) {
 
 function refreshSnapshots() {
   snapshots.value = getSnapshots()
-  saveExpanded.value = true
 }
 </script>
 

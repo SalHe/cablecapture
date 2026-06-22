@@ -72,7 +72,6 @@ function refreshSnapshots() {
       <div class="panel panel-input">
         <CableInput
           :cable-groups="cableGroups"
-          :has-manually-adjusted="hasManuallyAdjusted"
           @add="addCables"
           @remove-group="removeCableGroup"
           @remove-one="removeOneFromGroup"

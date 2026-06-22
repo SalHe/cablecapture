@@ -18,7 +18,6 @@ function cableColor(index: number): string {
 
 defineProps<{
   cableGroups: CableGroup[]
-  hasManuallyAdjusted: boolean
 }>()
 
 const emit = defineEmits<{
@@ -245,7 +244,7 @@ function toggleCollapsed() {
       </button>
 
       <button
-        v-if="hasManuallyAdjusted"
+        v-if="cableGroups.length > 0"
         class="btn-recalc"
         @click="emit('recalculate')"
       >

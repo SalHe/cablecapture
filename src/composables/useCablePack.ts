@@ -214,9 +214,11 @@ export function useCablePack() {
     const snapshot = snapshots.find(s => s.name === name)
     if (!snapshot) return false
 
-    // Cancel any pending auto-recalc
+    // Cancel any previous auto-recalc
     if (debounceTimer) clearTimeout(debounceTimer)
     cables.value = snapshot.cables.map(c => ({ ...c }))
+    // The watcher on cables creates a new debounce timer — cancel it too
+    if (debounceTimer) clearTimeout(debounceTimer)
     nextId = cables.value.reduce((max, c) => Math.max(max, c.id), 0) + 1
     packing.value = {
       positions: snapshot.positions.map(p => ({ ...p })),
